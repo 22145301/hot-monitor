@@ -7,8 +7,8 @@
 ## 核心功能
 
 - **关键词监控** - 添加、启停监控关键词，系统每 30 分钟自动抓取
-- **多数据源聚合** - 整合 Twitter/X、Bing、HackerNews、搜狗、B 站等 8+ 信息源
-- **AI 智能分析** - 利用大模型进行真假识别、相关性评分、内容摘要
+- **多数据源聚合** - 整合 Bing、HackerNews、搜狗、B 站、微博等 8+ 信息源
+- **AI 智能分析** - 利用千问大模型进行真假识别、相关性评分、内容摘要
 - **热度计算** - 综合点赞、转发、评论等指标计算热度 (0-100)
 - **实时推送** - WebSocket 实时推送新热点 + 邮件通知
 - **多维度筛选** - 按来源、重要性、时间范围筛选，支持热度/相关性/时间排序
@@ -20,7 +20,7 @@
 | 前端 | React 19 + Vite + Tailwind CSS 4 + Framer Motion |
 | 后端 | Express 5 + TypeScript + Prisma (SQLite) |
 | 实时通信 | Socket.io |
-| AI | OpenRouter (支持 Claude、GPT-4、Gemini 等模型) |
+| AI | 千问 (Qwen qwen3-max) |
 | 爬虫 | Cheerio + Axios |
 
 ## 项目结构
@@ -31,10 +31,10 @@ hot-monitor/
 │   ├── src/
 │   │   ├── components/       # UI 组件
 │   │   │   └── ui/          # 特效组件 (Spotlight, Meteors, BackgroundBeams)
-│   │   ├── services/        # API 和 WebSocket 服务
+│   │   ├── services/         # API 和 WebSocket 服务
 │   │   │   ├── api.ts       # REST API 客户端
 │   │   │   └── socket.ts    # WebSocket 客户端
-│   │   ├── utils/           # 工具函数
+│   │   ├── utils/            # 工具函数
 │   │   │   ├── sortHotspots.ts   # 热点排序
 │   │   │   └── relativeTime.ts  # 相对时间格式化
 │   │   └── App.tsx          # 主应用组件
@@ -46,14 +46,13 @@ hot-monitor/
 │   ├── src/
 │   │   ├── routes/          # API 路由
 │   │   │   ├── hotspots.ts     # 热点管理
-│   │   │   ├── keywords.ts    # 关键词管理
-│   │   │   ├── notifications.ts  # 通知
-│   │   │   └── settings.ts    # 设置
+│   │   │   ├── keywords.ts     # 关键词管理
+│   │   │   ├── notifications.ts # 通知
+│   │   │   └── settings.ts     # 设置
 │   │   ├── services/        # 业务逻辑
 │   │   │   ├── search.ts       # 国际搜索引擎 (Bing, Google, HN)
 │   │   │   ├── chinaSearch.ts  # 中国平台 (微博、搜狗、B站)
-│   │   │   ├── twitter.ts      # Twitter 抓取
-│   │   │   ├── ai.ts           # AI 分析服务
+│   │   │   ├── ai.ts           # AI 分析服务 (千问)
 │   │   │   └── email.ts        # 邮件通知
 │   │   ├── jobs/
 │   │   │   └── hotspotChecker.ts  # 定时任务
@@ -64,7 +63,7 @@ hot-monitor/
 │   └── hot-monitor/
 │       └── scripts/         # Python 脚本
 │
-└── docs/                     # 项目文档
+└── docs/                    # 项目文档
     ├── LOCAL_SETUP.md       # 本地运行指南
     ├── REQUIREMENTS.md      # 需求文档
     └── API_INTEGRATION.md   # API 集成文档
@@ -75,7 +74,7 @@ hot-monitor/
 ### 前置要求
 
 - Node.js ≥ 18 (推荐 20 LTS)
-- OpenRouter API Key ([获取地址](https://openrouter.ai/settings/keys))
+- 千问 API Key ([获取地址](https://dashscope.console.aliyun.com/))
 
 ### 1. 安装依赖
 
@@ -97,13 +96,17 @@ npm install
 cp server/.env.example server/.env
 ```
 
-编辑 `server/.env`，填入你的 OpenRouter API Key：
+编辑 `server/.env`，填入你的千问 API Key：
 
 ```env
 DATABASE_URL="file:./dev.db"
 PORT=3001
 CLIENT_URL=http://localhost:5173
-OPENROUTER_API_KEY=sk-or-v1-your-key-here
+
+AI_PROVIDER=qwen
+QIANWEN_API_KEY=your_qianwen_api_key_here
+QIANWEN_MODEL=qwen3-max
+QIANWEN_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
 ```
 
 ### 3. 启动服务
@@ -132,7 +135,9 @@ cd client && npm run dev
 | 路由 | 方法 | 描述 |
 |------|------|------|
 | `/api/keywords` | GET, POST | 关键词管理 |
+| `/api/keywords/:id/toggle` | PATCH | 切换关键词状态 |
 | `/api/hotspots` | GET, POST | 热点列表与搜索 |
+| `/api/hotspots/stats` | GET | 热点统计 |
 | `/api/notifications` | GET | 通知记录 |
 | `/api/settings` | GET, PUT | 系统设置 |
 | `/api/health` | GET | 健康检查 |
@@ -149,13 +154,14 @@ cd client && npm run dev
 
 ## 热点分析
 
-AI 分析功能由 OpenRouter 提供支持，热点入库前会经过：
+AI 分析功能由千问 (Qwen) 提供支持，热点入库前会经过：
 
 1. **真假识别** - 排除标题党、假新闻
 2. **相关性评分** - 0-100 分评估与关键词的相关性
 3. **重要性分级** - low / medium / high / urgent
 4. **智能摘要** - 生成 50 字以内的内容摘要
 5. **直接提及检测** - 判断内容是否直接提及关键词
+6. **查询扩展** - AI 将关键词扩展为多个变体用于预匹配
 
 ## 定时任务
 
@@ -169,6 +175,7 @@ AI 分析功能由 OpenRouter 提供支持，热点入库前会经过：
 - **搜狗搜索** - 中文搜索结果
 - **微博热搜** - 微博实时热搜
 - **B 站** - Bilibili 视频与弹幕数据
+- **微信公众号** - 通过搜狗微信搜索
 
 ## 开发相关
 

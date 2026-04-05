@@ -25,7 +25,7 @@
 | 需求项 | 描述 | 优先级 |
 |--------|------|--------|
 | 定时抓取 | 每 30 分钟抓取一次 | P0 |
-| 多数据源 | 网页搜索 + Twitter | P0 |
+| 多数据源 | 网页搜索（Bing、HackerNews）+ 国内平台（搜狗、B站、微博） | P0 |
 | 范围设置 | 用户指定收集范围（如"AI 编程"）| P0 |
 | 热点列表 | 展示收集到的热点 | P0 |
 | AI 分析 | 分析热点价值和可信度 | P1 |
@@ -66,65 +66,59 @@
 
 ## 4. 数据源规格
 
-### 4.1 网页搜索爬虫
+### 4.1 国际搜索引擎
 
 **目标搜索引擎：**
-- Bing 搜索
-- Google 搜索（备用）
+- Bing 搜索（主要）
+- HackerNews（技术新闻）
 
 **爬取策略：**
-- 频率限制：每次请求间隔 5-10 秒
+- 频率限制：每次请求间隔 5 秒
 - User-Agent 轮换
-- 代理支持（可选）
+- 并行请求 + 错误重试
 
 **数据提取：**
-- 标题
-- 摘要
-- 链接
-- 发布时间（如有）
+- 标题、摘要、链接、发布时间
 
-### 4.2 Twitter/X API
+### 4.2 国内平台
 
-**API 提供商：** twitterapi.io
-
-**获取数据：**
-- 推文内容
-- 发布时间
-- 用户信息
-- 互动数据（点赞、转发）
-
-**搜索方式：**
-- 关键词搜索
-- 时间范围过滤
-- 热度排序
+**整合平台：**
+- 搜狗搜索 - 中文搜索结果
+- 微博热搜 - 微博实时热搜
+- B 站 (Bilibili) - 视频与弹幕数据
+- 微信公众号 - 通过搜狗微信搜索
 
 ## 5. AI 分析规格
 
-### 5.1 OpenRouter 集成
+### 5.1 千问（Qianwen）集成
 
 **用途：**
 1. **真假识别** - 判断内容是否为假冒/标题党
 2. **热点分析** - 评估热点价值和相关性
 3. **内容摘要** - 生成热点摘要
+4. **查询扩展** - 将关键词扩展为多个变体用于预匹配
 
 **模型选择：**
-- 主模型：Claude 或 GPT-4
-- 备用模型：Gemini
+- 主模型：qwen3-max（千问 Plus）
 
 **Prompt 设计：**
 ```
-你是一个热点分析专家，请分析以下内容：
-1. 判断是否为真实的热点新闻（排除标题党、假新闻）
-2. 评估该热点与指定领域的相关性（0-100分）
-3. 评估热点的重要程度（低/中/高/紧急）
-4. 生成简短摘要（50字以内）
+你是一个热点内容精准匹配专家。你的任务是判断一段内容是否与指定的监控关键词【{keyword}】直接相关。
+
+分析要点：
+1. 判断是否为真实有价值的信息（排除标题党、假新闻、营销软文）
+2. 判断内容是否【直接】涉及关键词
+3. 评估热点的重要程度
+4. 用一句话说明此内容与关键词的关系
 
 输出 JSON 格式：
 {
   "isReal": true/false,
   "relevance": 0-100,
+  "relevanceReason": "相关性打分理由...",
+  "keywordMentioned": true/false,
   "importance": "low/medium/high/urgent",
-  "summary": "..."
+  "summary": "此内容与【{keyword}】的关联：..."
 }
 ```
 
@@ -133,10 +127,10 @@
 ### 6.1 Web 页面
 
 **页面结构：**
-1. **仪表盘** - 总览热点统计
-2. **关键词管理** - 添加/编辑/删除
-3. **热点列表** - 展示收集的热点
-4. **设置页** - 通知配置、API 配置
+1. **仪表盘** - 总览热点统计（总热点数、今日新增、紧急热点、监控词数）
+2. **关键词管理** - 添加/编辑/删除/启停
+3. **热点列表** - 展示收集的热点，支持筛选排序
+4. **搜索页** - 手动搜索热点内容
 
 **UI 风格：**
 - 赛博朋克风格
@@ -162,18 +156,27 @@ GET    /api/keywords         # 获取所有关键词
 POST   /api/keywords         # 添加关键词
 PUT    /api/keywords/:id     # 更新关键词
 DELETE /api/keywords/:id     # 删除关键词
+PATCH  /api/keywords/:id/toggle  # 切换激活状态
 
 # 热点数据
-GET    /api/hotspots         # 获取热点列表
-GET    /api/hotspots/:id     # 获取热点详情
+GET    /api/hotspots         # 获取热点列表（支持分页、筛选、排序）
+GET    /api/hotspots/stats   # 获取热点统计
+GET    /api/hotspots/:id    # 获取热点详情
 POST   /api/hotspots/search  # 手动搜索热点
+DELETE /api/hotspots/:id    # 删除热点
 
 # 设置
 GET    /api/settings         # 获取设置
 PUT    /api/settings         # 更新设置
 
 # 通知
-GET    /api/notifications    # 获取通知历史
+GET    /api/notifications         # 获取通知历史
+PATCH  /api/notifications/read-all  # 标记全部已读
+DELETE /api/notifications/:id    # 删除通知
+
+# 系统
+GET    /api/health           # 健康检查
+POST   /api/check-hotspots    # 手动触发热点检查
 ```
 
 ### 7.2 WebSocket 事件
@@ -181,7 +184,6 @@ GET    /api/notifications    # 获取通知历史
 ```
 # 服务端 -> 客户端
 hotspot:new      # 新热点发现
-hotspot:update   # 热点更新
 notification     # 通知消息
 
 # 客户端 -> 服务端

@@ -1,13 +1,17 @@
-import { OpenRouter } from '@openrouter/sdk';
 import type { AIAnalysis } from '../types.js';
 
-const openRouter = new OpenRouter({
-  apiKey: process.env.OPENROUTER_API_KEY ?? ''
-});
-
-const AI_PROVIDER = (process.env.AI_PROVIDER || 'openrouter').toLowerCase();
+const AI_PROVIDER = (process.env.AI_PROVIDER || 'qwen').toLowerCase();
 const QIANWEN_API_KEY = process.env.QIANWEN_API_KEY || '';
-const QIANWEN_API_URL = process.env.QIANWEN_API_URL || 'https://api.openai.com/v1/chat/completions';
+const QIANWEN_API_URL = process.env.QIANWEN_API_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+const QIANWEN_MODEL = process.env.QIANWEN_MODEL || 'qwen-plus';
+
+function hasQianwenConfig(): boolean {
+  return AI_PROVIDER === 'qwen' || AI_PROVIDER === 'qianwen' || AI_PROVIDER === 'qwen';
+}
+
+function hasOpenRouterConfig(): boolean {
+  return Boolean(process.env.OPENROUTER_API_KEY);
+}
 
 // ========== Query Expansion（查询扩展） ==========
 
@@ -27,19 +31,21 @@ export async function expandKeyword(keyword: string): Promise<string[]> {
   // 不管 AI 是否可用，先提取基础核心词
   const coreTerms = extractCoreTerms(keyword);
 
-  if (!process.env.OPENROUTER_API_KEY) {
-    const result = [keyword, ...coreTerms];
-    expansionCache.set(keyword, result);
-    return result;
-  }
-
-  try {
-    const result = await openRouter.chat.send({
-      model: 'deepseek/deepseek-v3.2',
-      messages: [
-        {
-          role: 'system',
-          content: `你是一个搜索查询扩展专家。给定一个监控关键词，生成该关键词的变体和相关检索词，用于文本匹配。
+  // 优先使用千问
+  if (hasQianwenConfig() && QIANWEN_API_KEY) {
+    try {
+      const response = await fetch(QIANWEN_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${QIANWEN_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: QIANWEN_MODEL,
+          messages: [
+            {
+              role: 'system',
+              content: `你是一个搜索查询扩展专家。给定一个监控关键词，生成该关键词的变体和相关检索词，用于文本匹配。
 
 规则：
 1. 包含原始关键词的各种写法（大小写、空格、连字符变体）
@@ -51,29 +57,31 @@ export async function expandKeyword(keyword: string): Promise<string[]> {
 输出 JSON 数组，只输出 JSON，不要有其他内容。
 示例输入："Claude Sonnet 4.6"
 示例输出：["Claude Sonnet 4.6", "Claude Sonnet", "Sonnet 4.6", "claude-sonnet-4.6", "Claude 4.6", "Anthropic Sonnet"]`
-        },
-        {
-          role: 'user',
-          content: keyword
-        }
-      ],
-      temperature: 0.2,
-      maxTokens: 300
-    });
+            },
+            {
+              role: 'user',
+              content: keyword
+            }
+          ],
+          temperature: 0.2,
+          max_tokens: 300
+        })
+      });
 
-    const rawContent = result.choices[0]?.message?.content || '';
-    const responseContent = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
-    const jsonMatch = responseContent.match(/\[[\s\S]*\]/);
-    if (jsonMatch) {
-      const parsed: string[] = JSON.parse(jsonMatch[0]);
-      // 确保原始关键词和核心词都在列表中
-      const expanded = [...new Set([keyword, ...coreTerms, ...parsed.map(s => s.trim()).filter(Boolean)])];
-      expansionCache.set(keyword, expanded);
-      console.log(`  🔍 Query expansion for "${keyword}": ${expanded.length} variants`);
-      return expanded;
+      const json = await response.json();
+      const rawContent = json.choices?.[0]?.message?.content || '';
+      const responseContent = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
+      const jsonMatch = responseContent.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        const parsed: string[] = JSON.parse(jsonMatch[0]);
+        const expanded = [...new Set([keyword, ...coreTerms, ...parsed.map((s: string) => s.trim()).filter(Boolean)])];
+        expansionCache.set(keyword, expanded);
+        console.log(`  🔍 Query expansion (Qianwen) for "${keyword}": ${expanded.length} variants`);
+        return expanded;
+      }
+    } catch (error) {
+      console.error('Query expansion (Qianwen) failed:', error);
     }
-  } catch (error) {
-    console.error('Query expansion failed:', error);
   }
 
   // Fallback：使用基础核心词
@@ -153,34 +161,30 @@ ${matchHint}
 }
 
 export async function analyzeContent(content: string, keyword: string, preMatchResult?: { matched: boolean; matchedTerms: string[] }): Promise<AIAnalysis> {
-  // 默认预匹配结果
   const matchResult = preMatchResult ?? { matched: false, matchedTerms: [] };
 
-  // 如果配置了 Qianwen（或其他 provider），优先使用
-  if ((AI_PROVIDER === 'qianwen' || AI_PROVIDER === 'qwen') && QIANWEN_API_KEY) {
+  // 优先使用千问
+  if (hasQianwenConfig() && QIANWEN_API_KEY) {
     try {
       const prompt = buildAnalysisPrompt(keyword, matchResult);
-      const body = {
-        model: 'qwen3-max',
-        messages: [
-          { role: 'system', content: prompt },
-          { role: 'user', content: content.slice(0, 2000) }
-        ],
-        temperature: 0.2,
-        max_tokens: 500
-      };
-
-      const res = await fetch(QIANWEN_API_URL, {
+      const response = await fetch(QIANWEN_API_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${QIANWEN_API_KEY}`
         },
-        body: JSON.stringify(body),
-        // timeout handled by fetch implementation / environment
+        body: JSON.stringify({
+          model: QIANWEN_MODEL,
+          messages: [
+            { role: 'system', content: prompt },
+            { role: 'user', content: content.slice(0, 2000) }
+          ],
+          temperature: 0.2,
+          max_tokens: 500
+        })
       });
 
-      const json = await res.json();
+      const json = await response.json();
       const rawContent = json.choices?.[0]?.message?.content || json.choices?.[0]?.text || '';
       const responseContent = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
       const jsonMatch = responseContent.match(/\{[\s\S]*\}/);
@@ -197,73 +201,19 @@ export async function analyzeContent(content: string, keyword: string, preMatchR
       }
     } catch (error) {
       console.error('Qianwen AI analysis failed:', error);
-      // Fall through to other providers or fallback
     }
   }
 
-  if (!process.env.OPENROUTER_API_KEY) {
-    console.warn('OpenRouter API key not configured, using fallback analysis');
-    return {
-      isReal: true,
-      relevance: matchResult.matched ? 50 : 20,
-      relevanceReason: '未配置 AI 服务，使用默认分数',
-      keywordMentioned: matchResult.matched,
-      importance: 'low',
-      summary: content.slice(0, 50) + '...'
-    };
-  }
-
-  try {
-    const prompt = buildAnalysisPrompt(keyword, matchResult);
-
-    const result = await openRouter.chat.send({
-      model: 'deepseek/deepseek-v3.2',
-      messages: [
-        {
-          role: 'system',
-          content: prompt
-        },
-        {
-          role: 'user',
-          content: content.slice(0, 2000) // 限制内容长度
-        }
-      ],
-      temperature: 0.2, // 降低温度，提高判断一致性
-      maxTokens: 500
-    });
-
-    const rawContent = result.choices[0]?.message?.content || '';
-    const responseContent = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
-
-    // 尝试解析 JSON
-    const jsonMatch = responseContent.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      return {
-        isReal: Boolean(parsed.isReal),
-        relevance: Math.min(100, Math.max(0, Number(parsed.relevance) || 0)),
-        relevanceReason: String(parsed.relevanceReason || '').slice(0, 200),
-        keywordMentioned: Boolean(parsed.keywordMentioned),
-        importance: ['low', 'medium', 'high', 'urgent'].includes(parsed.importance)
-          ? parsed.importance
-          : 'low',
-        summary: String(parsed.summary || '').slice(0, 150)
-      };
-    }
-
-    throw new Error('Failed to parse AI response');
-  } catch (error) {
-    console.error('AI analysis failed:', error);
-    // Fallback
-    return {
-      isReal: true,
-      relevance: matchResult.matched ? 30 : 10,
-      relevanceReason: 'AI 分析失败，使用默认分数',
-      keywordMentioned: matchResult.matched,
-      importance: 'low',
-      summary: content.slice(0, 50) + '...'
-    };
-  }
+  // Fallback：无 AI 配置时的默认值
+  console.warn('No AI provider configured, using fallback analysis');
+  return {
+    isReal: true,
+    relevance: matchResult.matched ? 50 : 20,
+    relevanceReason: '未配置 AI 服务，使用默认分数',
+    keywordMentioned: matchResult.matched,
+    importance: 'low',
+    summary: content.slice(0, 50) + '...'
+  };
 }
 
 export async function batchAnalyze(contents: string[], keyword: string, expandedKeywords?: string[]): Promise<AIAnalysis[]> {
